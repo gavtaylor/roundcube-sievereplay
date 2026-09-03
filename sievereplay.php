@@ -57,6 +57,15 @@ class sievereplay extends rcube_plugin
         $this->register_action('plugin.sievereplay.run', [$this, 'run']);
 
         $this->add_hook('settings_actions', [$this, 'settings_actions']);
+
+        // Must be loaded unconditionally here, not deferred to
+        // settings_page(): the settings-menu sidebar (and its sievereplay
+        // icon override, in sievereplay.css) is rendered by core on every
+        // settings tab, not just ours -- deferring it left every other
+        // settings page showing Elastic's generic fallback cog instead of
+        // our icon. Confirmed against the same fix already applied to this
+        // account's markasphishing plugin (commit c555db7c there).
+        $this->include_stylesheet($this->local_skin_path() . '/sievereplay.css');
     }
 
     public function settings_actions($args)
@@ -76,7 +85,6 @@ class sievereplay extends rcube_plugin
     {
         $this->rcube->output->set_pagetitle($this->gettext('title'));
         $this->include_script('sievereplay.js');
-        $this->include_stylesheet($this->local_skin_path() . '/sievereplay.css');
         $this->register_handler('plugin.body', [$this, 'render_form']);
         $this->rcube->output->send('plugin');
     }
