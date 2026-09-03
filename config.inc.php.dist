@@ -1,0 +1,28 @@
+<?php
+
+$config = [];
+
+// Path to the privileged helper this plugin shells out to in order to run
+// sieve-filter against an existing mailbox. The helper is responsible for
+// resolving the calling user's active Sieve script itself -- this plugin
+// never passes a script path across the trust boundary, only a username
+// (taken from the authenticated session, never from client input) and a
+// folder name.
+// Example (sudoers-based, same host as Dovecot -- see helper/README.md in
+// this repo for the sudoers rule this expects):
+//   $config['sievereplay_helper'] = 'sudo -n /usr/local/sbin/rc-sieve-refilter';
+$config['sievereplay_helper'] = null;
+
+// Usernames allowed to use this plugin at all. On a multi-user instance you
+// should set this -- if left null/empty, ANY logged-in user can trigger a
+// refilter of their own mailbox, which is only appropriate for single-user
+// installs or testing. This does not let a user affect anyone else's
+// mailbox regardless of setting -- the helper is always scoped to the
+// calling user's own session username.
+// Example: $config['sievereplay_admins'] = ['joe.bloggs'];
+$config['sievereplay_admins'] = null;
+
+// Write a log line (to the 'sievereplay' log) for every execute-mode run,
+// recording who ran it, when, which folder, and the discard-action used.
+// Simulate-mode (dry-run) runs are not logged since they make no changes.
+$config['sievereplay_debug'] = true;

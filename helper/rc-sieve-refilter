@@ -1,0 +1,121 @@
+#!/bin/bash
+#
+# rc-sieve-refilter -- privileged helper invoked (via sudo) by the
+# sievereplay Roundcube plugin to run a user's *own, currently active*
+# Sieve script against a folder already in their mailbox, using Dovecot
+# Pigeonhole's sieve-filter.
+#
+# Trust boundary: this script resolves the active script path itself from
+# the given username -- it never accepts a script path as input. The
+# username and folder are the only inputs, and are validated strictly
+# below. This script does NOT verify that the caller is actually that
+# user -- it trusts whoever can invoke it (via sudo, restricted to the
+# webmail PHP-FPM user) to only ever pass the Roundcube session's own
+# authenticated username. That check lives in the plugin's PHP, not here.
+#
+# Usage: rc-sieve-refilter <user@domain> <folder> <simulate|execute> [<discard-policy>]
+#
+# discard-policy controls what happens to messages the Sieve script itself
+# would `discard` (or otherwise not keep) -- confirmed by hand against a
+# disposable test folder that sieve-filter's own default ("keep") leaves
+# such messages exactly where they are, untouched, even in execute mode.
+# fileinto/keep actions are unaffected by this and always take effect in
+# execute mode regardless. One of:
+#   keep    (default) leave discarded messages in place -- no data loss,
+#           but the discard has no visible effect on existing mail.
+#   trash   move discarded messages to the Trash folder.
+#   expunge permanently remove discarded messages. Irreversible.
+#
+# Exit codes: 2 = bad arguments, 3 = no active script for that user,
+# otherwise sieve-filter's own exit code (0 = ran without fatal error,
+# non-zero = it errored, e.g. because the requested folder doesn't exist --
+# sieve-filter reports that itself in its stderr output).
+
+set -euo pipefail
+
+SIEVE_ROOT="/var/vmail/sieve"
+LOG="/var/log/sievereplay-helper.log"
+
+usage() {
+    echo "Usage: $0 <user@domain> <folder> <simulate|execute> [<discard-policy>]" >&2
+    exit 2
+}
+
+[ $# -eq 3 ] || [ $# -eq 4 ] || usage
+
+user="$1"
+folder="$2"
+mode="$3"
+discard_policy="${4:-keep}"
+
+# Strict allow-list: local-part@domain, each half [A-Za-z0-9._-]+ only.
+# Rejects anything that could traverse out of $SIEVE_ROOT (no '/', no '..').
+if [[ ! "$user" =~ ^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+)$ ]]; then
+    echo "Invalid username: $user" >&2
+    exit 2
+fi
+local_part="${BASH_REMATCH[1]}"
+domain="${BASH_REMATCH[2]}"
+
+if [ -z "$folder" ]; then
+    echo "Folder must not be empty" >&2
+    exit 2
+fi
+
+case "$mode" in
+    simulate|execute) ;;
+    *)
+        echo "Mode must be 'simulate' or 'execute', got: $mode" >&2
+        exit 2
+        ;;
+esac
+
+case "$discard_policy" in
+    keep|trash|expunge) ;;
+    *)
+        echo "discard-policy must be 'keep', 'trash', or 'expunge', got: $discard_policy" >&2
+        exit 2
+        ;;
+esac
+
+script_path="$SIEVE_ROOT/$domain/$local_part/.dovecot.sieve"
+
+# Defend against the constructed path resolving outside $SIEVE_ROOT (e.g.
+# via an unexpected symlink) even though the character allow-list above
+# already blocks '/' and '..' in the inputs themselves.
+resolved_script="$(realpath -e "$script_path" 2>/dev/null)" || {
+    echo "No active Sieve script for $user" >&2
+    exit 3
+}
+case "$resolved_script" in
+    "$SIEVE_ROOT"/*) ;;
+    *)
+        echo "Refusing to use script outside $SIEVE_ROOT: $resolved_script" >&2
+        exit 3
+        ;;
+esac
+
+args=(-C -u "$user")
+if [ "$mode" = execute ]; then
+    args+=(-e -W)
+fi
+args+=("$resolved_script" "$folder")
+
+if [ "$mode" = execute ]; then
+    case "$discard_policy" in
+        trash) args+=(move Trash) ;;
+        expunge) args+=(expunge) ;;
+        keep) ;; # sieve-filter's own default; no extra argument needed
+    esac
+fi
+
+set +e
+output="$(sieve-filter "${args[@]}" 2>&1)"
+exit_code=$?
+set -e
+
+printf '%s user=%s folder=%s mode=%s discard=%s exit=%d\n' \
+    "$(date -Is)" "$user" "$folder" "$mode" "$discard_policy" "$exit_code" >> "$LOG"
+
+echo "$output"
+exit "$exit_code"
